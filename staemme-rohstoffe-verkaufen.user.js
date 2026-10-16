@@ -4,6 +4,8 @@
 // @version      1.5
 // @description  Berechnet pro Rohstoff die Verkaufsmenge, trägt sie ein, berechnet das beste Angebot und bestätigt.
 // @match        https://*.die-staemme.de/game.php*
+// @updateURL    https://github.com/trolodil/djungelfosi/raw/refs/heads/main/staemme-rohstoffe-verkaufen.user.js
+// @downloadURL  https://github.com/trolodil/djungelfosi/raw/refs/heads/main/staemme-rohstoffe-verkaufen.user.js
 // @grant        none
 // ==/UserScript==
 
