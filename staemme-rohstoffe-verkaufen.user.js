@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Die Stämme - Premium-Depot Rohstoffe verkaufen
 // @namespace    staemme-exchange-helper
-// @version      1.5
+// @version      1.6
 // @description  Berechnet pro Rohstoff die Verkaufsmenge, trägt sie ein, berechnet das beste Angebot und bestätigt.
 // @match        https://*.die-staemme.de/game.php*
 // @updateURL    https://github.com/trolodil/djungelfosi/raw/refs/heads/main/staemme-rohstoffe-verkaufen.user.js
@@ -25,7 +25,7 @@
     const DEFAULT_DELAY = 7;      // Sekunden zwischen den Rohstoffen
     const DEFAULT_FACTOR = 1.5;   // Kurs + 50 %
     const STEP = 1000;            // volle Tausender
-    const VERSION = '1.5';
+    const VERSION = '1.6';
 
     // ---------- Helfer ----------
     const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -86,6 +86,12 @@
         const stock = getStock(r.key);
         const rate = getRate(r.col);
         if (!rate) return { amt: 0, rate, stock };
+        // Reicht die Transportmenge für den ganzen Vorrat, wird nicht auf Tausender
+        // abgerundet, sondern der Vorrat selbst minus Kurs * Faktor verkauft.
+        const exactAmt = stock - Math.round(rate * factor);
+        if (exactAmt >= rate && Math.ceil(exactAmt / STEP) * STEP <= remainingCap && exactAmt <= getDepotRoom(r.col)) {
+            return { amt: exactAmt, rate, stock };
+        }
         // Erst die Obergrenzen auf volle Tausender anwenden (Vorrat, freie Händler, Depot-Platz),
         // danach erst den Kurs-Abzug (Kurs * Faktor) - so passt die Menge immer in die Händler.
         let base = Math.floor(stock / STEP) * STEP;
@@ -229,11 +235,19 @@
             let remaining = getMerchantCapacity();
             log(`Freie Transportmenge: ${remaining}`);
             const active = RES.filter(r => box.querySelector('#dv_' + r.key).checked);
-            const plan = planSlots(active, remaining);
-            log('Plan (Tausender): ' + active.map(r => `${r.name} ${plan[r.key]}`).join(', '));
+            // Reichen die Händler für alle gewählten Rohstoffe komplett? Dann alles verkaufen (ohne Abrunden).
+            const needAll = active.reduce((sum, r) => {
+                const exact = getStock(r.key) - Math.round(getRate(r.col) * factor);
+                return sum + (exact > 0 ? Math.ceil(exact / STEP) * STEP : 0);
+            }, 0);
+            const sellAll = needAll <= remaining;
+            const plan = sellAll ? null : planSlots(active, remaining);
+            log(sellAll
+                ? 'Händler reichen für alles: verkaufe Vorrat minus Kurs-Abzug'
+                : 'Plan (Tausender): ' + active.map(r => `${r.name} ${plan[r.key]}`).join(', '));
             for (let i = 0; i < active.length; i++) {
                 if (remaining <= 0) { log('Keine Händler mehr frei'); break; }
-                const cap = Math.min(remaining, plan[active[i].key] * STEP);
+                const cap = sellAll ? remaining : Math.min(remaining, plan[active[i].key] * STEP);
                 const used = cap > 0 ? await sellOne(active[i], cap, factor) : 0;
                 remaining -= used;
                 if (i < active.length - 1) {
