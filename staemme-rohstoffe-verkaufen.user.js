@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Die Stämme Tools (Depot-Verkauf + Raubzug)
 // @namespace    staemme-exchange-helper
-// @version      2.8
+// @version      3.0
 // @description  Premium-Depot: Rohstoffe verkaufen (Marktplatz, stoppt bei Botschutz). Raubzug: Auto-Start mit Log, Freischalten und Botschutz-Stopp. Hauptgebäude: Auto-Beenden. Läuft je nach Seite.
 // @match        https://*.die-staemme.de/game.php*
 // @match        https://*.staemme.ch/game.php*
@@ -13,6 +13,8 @@
 // =====================================================================
 // Gemeinsam: Schnellleiste (Links zu den Seiten)
 // =====================================================================
+const STM_VERSION = '3.0';
+
 const NAV_LINKS = [
     { short: 'HG',      title: 'Hauptgebäude',  query: 'screen=main',                 screen: 'main' },
     { short: 'Raubzug', title: 'Raubzug',       query: 'screen=place&mode=scavenge',  screen: 'place',  mode: 'scavenge' },
@@ -58,7 +60,7 @@ const STM_CSS = `
 .stm-box.stm-docked{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 18px;}
 .stm-box.stm-docked .stm-sec{margin:0;}
 .stm-box.stm-docked .stm-title{align-self:center;}
-.stm-box.stm-docked .stm-nav{flex:1 1 340px;}
+.stm-box.stm-docked .stm-nav{flex:1 1 100%;}
 .stm-box.stm-docked .stm-nav a{flex:1 1 0;min-width:64px;}
 .stm-box.stm-docked .stm-nav a.stm-tg{flex:1 1 100%;}
 .stm-box.stm-docked .stm-stack label{display:inline-block;margin:0 14px 0 0;white-space:nowrap;}
@@ -70,6 +72,8 @@ const STM_CSS = `
 .stm-box.stm-docked .stm-auto{display:flex;align-items:center;gap:10px;border-top:0;padding-top:0;text-align:left;}
 .stm-box.stm-docked .stm-atitle,.stm-box.stm-docked .stm-status{margin:0;}
 .stm-box.stm-docked .stm-btn{width:auto;min-width:90px;}
+.stm-box .stm-foot{font-size:10px;color:#7d510f;text-align:right;margin:2px 0 0;}
+.stm-box.stm-docked .stm-foot{flex:1 1 100%;margin:-4px 0 0;}
 `;
 function ensureStyle() {
     if (document.getElementById('stm-style')) return;
@@ -159,6 +163,14 @@ function makeNav() {
     return wrap;
 }
 
+// Kleine Fußzeile unten rechts: Name + Versionsnummer
+function makeFoot(name) {
+    const d = document.createElement('div');
+    d.className = 'stm-sec stm-foot';
+    d.textContent = name + ' v' + STM_VERSION;
+    return d;
+}
+
 // Botschutz-Erkennung (für Depot-Verkauf und Raubzug gemeinsam)
 const BOT_SELECTORS = [
     '#bot_check', '#botprotection_quest', '.bot-protection-row',
@@ -192,7 +204,7 @@ function botProtectionVisible() {
     const DEFAULT_DELAY = 7;      // Sekunden zwischen den Rohstoffen
     const DEFAULT_FACTOR = 1.5;   // Kurs + 50 %
     const STEP = 1000;            // volle Tausender
-    const VERSION = '2.8';
+    const VERSION = STM_VERSION;
 
     // ---------- Helfer ----------
     const rawSleep = ms => new Promise(r => setTimeout(r, ms));
@@ -332,7 +344,6 @@ function botProtectionVisible() {
     box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;width:250px;background:#f4e4bc;border:2px solid #7d510f;border-radius:6px;padding:8px;font:12px Verdana,sans-serif;color:#000;box-shadow:0 2px 8px rgba(0,0,0,.4)';
     box.className = 'stm-box';
     box.innerHTML = `
-        <div class="stm-sec stm-title">Depot-Verkauf <span class="stm-ver">v${VERSION}</span></div>
         <div class="stm-sec stm-stack">
             <label><input type="checkbox" id="dv_wood" checked> Holz</label>
             <label><input type="checkbox" id="dv_stone" checked> Lehm</label>
@@ -346,9 +357,10 @@ function botProtectionVisible() {
             <button id="dv_start" class="btn">Alle starten</button>
             <div id="dv_single"></div>
         </div>
-        <div class="stm-sec stm-log"><div id="dv_log"></div></div>`;
+        <div class="stm-sec stm-log"><div id="dv_log"></div></div>
+        <div class="stm-sec stm-foot">Depot-Verkauf v${VERSION}</div>`;
     placeBox(box);
-    box.querySelector('div').after(makeNav());
+    box.insertBefore(makeNav(), box.firstChild);
 
     const logEl = box.querySelector('#dv_log');
     const log = (msg, warn) => {
@@ -545,7 +557,7 @@ function botProtectionVisible() {
 
     // ---------- GUI ----------
     const box = document.createElement('div');
-    box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#f4e4bc;border:2px solid #7d510f;padding:5px 8px;font:12px Arial;border-radius:4px;box-shadow:0 0 6px #0008;width:190px;';
+    box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;width:190px;background:#f4e4bc;border:2px solid #7d510f;border-radius:6px;padding:8px;font:12px Verdana,sans-serif;color:#000;box-shadow:0 2px 8px rgba(0,0,0,.4)';
     box.className = 'stm-box';
     box.innerHTML =
         '<div class="stm-sec stm-actions"><button id="rz_btn"></button></div>' +
@@ -558,7 +570,8 @@ function botProtectionVisible() {
         '</div>' +
         '<div class="stm-sec"><div id="rz_info">Bereit</div></div>' +
         '<div class="stm-sec stm-log"><div id="rz_log"></div>' +
-        '<a href="#" id="rz_clear" style="font-size:10px;color:#7d510f;">Log leeren</a></div>';
+        '<a href="#" id="rz_clear" style="font-size:10px;color:#7d510f;">Log leeren</a></div>' +
+        '<div class="stm-sec stm-foot">Raubzug v' + STM_VERSION + '</div>';
     placeBox(box);
     box.insertBefore(makeNav(), box.firstChild);
     const btn = box.querySelector('#rz_btn');
@@ -944,8 +957,8 @@ function botProtectionVisible() {
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;width:190px;background:#f4e4bc;border:2px solid #7d510f;border-radius:6px;padding:8px;font:12px Verdana,sans-serif;color:#000;box-shadow:0 2px 8px rgba(0,0,0,.4)';
     box.className = 'stm-box';
-    box.innerHTML = '<div class="stm-sec stm-title">Schnellzugriff <span class="stm-ver">v' + '2.8' + '</span></div>';
     box.appendChild(makeNav());
+    box.appendChild(makeFoot('Schnellzugriff'));
     placeBox(box);
 
     if (new URLSearchParams(location.search).get('screen') === 'main') initAutoBeenden(box);
@@ -977,7 +990,7 @@ function botProtectionVisible() {
         const status = document.createElement('div');
         status.className = 'stm-status';
         sec.append(title, btn, status);
-        parent.appendChild(sec);
+        parent.insertBefore(sec, parent.querySelector('.stm-foot')); // Fußzeile bleibt ganz unten
 
         function render(msg) {
             btn.textContent = running ? 'Stop' : 'Start';
