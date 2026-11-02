@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Die Stämme Tools (Depot-Verkauf + Raubzug)
 // @namespace    staemme-exchange-helper
-// @version      2.6
+// @version      2.8
 // @description  Premium-Depot: Rohstoffe verkaufen (Marktplatz, stoppt bei Botschutz). Raubzug: Auto-Start mit Log, Freischalten und Botschutz-Stopp. Hauptgebäude: Auto-Beenden. Läuft je nach Seite.
 // @match        https://*.die-staemme.de/game.php*
 // @match        https://*.staemme.ch/game.php*
@@ -29,21 +29,133 @@ function gameUrl(query) {
     return location.origin + '/game.php?' + keep.join('&');
 }
 
+// ---------- Gemeinsames Aussehen ----------
+// Schwebend: kompakte Box. Angedockt (.stm-docked): volle Inhaltsbreite, Bereiche nebeneinander.
+const STM_CSS = `
+.stm-box{box-sizing:border-box;}
+.stm-box .stm-sec{margin-bottom:6px;}
+.stm-box .stm-title{font-weight:bold;}
+.stm-box .stm-ver{font-weight:normal;color:#7d510f;}
+.stm-box label{cursor:pointer;}
+.stm-box .stm-stack label{display:block;margin-bottom:3px;}
+.stm-box .stm-inline label{display:inline-block;margin:0 10px 0 0;}
+.stm-box button{cursor:pointer;}
+.stm-box button.btn,.stm-box #rz_btn{min-height:36px;padding:6px 14px;font-size:14px;font-weight:bold;}
+.stm-box .stm-nav{display:flex;flex-wrap:wrap;gap:6px;}
+.stm-box .stm-nav a{flex:1 1 40%;box-sizing:border-box;text-align:center;padding:10px 6px;border:1px solid #7d510f;border-radius:5px;color:#3a2800;text-decoration:none;font:15px Arial,sans-serif;background:#f9ecc8;}
+.stm-box .stm-nav a.stm-cur{background:#c9a96a;font-weight:bold;}
+.stm-box .stm-nav a.stm-tg{flex:1 1 100%;border:0;background:none;padding:2px 0;font-size:12px;color:#7d510f;text-decoration:underline;}
+.stm-box #dv_start{width:100%;margin-bottom:6px;}
+.stm-box #dv_single{display:flex;gap:4px;}
+.stm-box #dv_single button{flex:1;}
+.stm-box #dv_log{max-height:140px;overflow:auto;background:#fff8e1;border:1px solid #c1a264;padding:4px;}
+.stm-box #rz_info{margin-top:4px;font-size:11px;font-weight:bold;}
+.stm-box #rz_log{margin-top:4px;background:#fffbe8;border:1px solid #c9a96a;height:95px;overflow-y:auto;font:10px/1.35 monospace;padding:2px 3px;}
+.stm-box .stm-auto{margin-top:8px;padding-top:8px;border-top:1px solid #c1a264;text-align:center;}
+.stm-box .stm-atitle{font-weight:bold;margin-bottom:6px;}
+.stm-box .stm-btn{width:100%;border:1px solid #333;border-radius:5px;padding:10px 14px;font:bold 15px Arial,sans-serif;color:#fff;cursor:pointer;}
+.stm-box .stm-status{margin-top:6px;font-size:12px;}
+.stm-box.stm-docked{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 18px;}
+.stm-box.stm-docked .stm-sec{margin:0;}
+.stm-box.stm-docked .stm-title{align-self:center;}
+.stm-box.stm-docked .stm-nav{flex:1 1 340px;}
+.stm-box.stm-docked .stm-nav a{flex:1 1 0;min-width:64px;}
+.stm-box.stm-docked .stm-nav a.stm-tg{flex:1 1 100%;}
+.stm-box.stm-docked .stm-stack label{display:inline-block;margin:0 14px 0 0;white-space:nowrap;}
+.stm-box.stm-docked .stm-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.stm-box.stm-docked #dv_start{width:auto;margin:0;}
+.stm-box.stm-docked .stm-log{flex:1 1 100%;}
+.stm-box.stm-docked #dv_log{max-height:90px;}
+.stm-box.stm-docked #rz_log{height:80px;font-size:11px;}
+.stm-box.stm-docked .stm-auto{display:flex;align-items:center;gap:10px;border-top:0;padding-top:0;text-align:left;}
+.stm-box.stm-docked .stm-atitle,.stm-box.stm-docked .stm-status{margin:0;}
+.stm-box.stm-docked .stm-btn{width:auto;min-width:90px;}
+`;
+function ensureStyle() {
+    if (document.getElementById('stm-style')) return;
+    const st = document.createElement('style');
+    st.id = 'stm-style';
+    st.textContent = STM_CSS;
+    (document.head || document.documentElement).appendChild(st);
+}
+
+// ---------- Platzierung der GUI-Boxen ----------
+// Standard: angedockt zwischen Schnellleiste (#quickbar_outer) und Rohstoffleiste.
+// Alternativ frei schwebend rechts oben. Umschalter in der Schnellleiste, wird gemerkt.
+const DOCK_KEY = 'staemmeTools_dock';
+function dockPref() { try { return localStorage.getItem(DOCK_KEY) !== '0'; } catch (e) { return true; } }
+function setDockPref(v) { try { localStorage.setItem(DOCK_KEY, v ? '1' : '0'); } catch (e) {} }
+
+const TABLE_PARTS = /^(TABLE|TBODY|THEAD|TFOOT|TR)$/;
+function spotAt(node, after) {
+    // Nicht mitten in eine Tabelle einfügen, sondern davor/dahinter
+    let n = node;
+    while (n.parentNode && TABLE_PARTS.test(n.parentNode.nodeName)) n = n.parentNode;
+    return n.parentNode ? { parent: n.parentNode, before: after ? n.nextSibling : n } : null;
+}
+function dockSpot() {
+    const wood = document.getElementById('wood');
+    const quick = document.getElementById('quickbar_outer');
+    // 1) direkt unter der Schnellleiste (wenn sie über den Rohstoffen liegt)
+    if (quick && (!wood || (quick.compareDocumentPosition(wood) & Node.DOCUMENT_POSITION_FOLLOWING))) {
+        return spotAt(quick, true);
+    }
+    // 2) sonst direkt über der Rohstoffleiste
+    const content = document.getElementById('content_value');
+    if (wood && content) {
+        let n = wood;
+        while (n.parentElement && n.parentElement !== document.body && !n.parentElement.contains(content)) n = n.parentElement;
+        return spotAt(n, false);
+    }
+    return null;
+}
+function applyPlacement(el) {
+    ensureStyle();
+    const disp = el.style.display;
+    const spot = dockPref() ? dockSpot() : null;
+    const wide = el.classList.contains('stm-box'); // Boxen werden breit, der Alarm-Marker bleibt klein
+    el.classList.toggle('stm-docked', !!spot);
+    if (spot) {
+        el.style.cssText = el.dataset.floatCss + ';position:relative;top:auto;right:auto;left:auto;' +
+            (wide ? 'width:auto;margin:4px 0;' : 'margin:4px 8px;');
+        spot.parent.insertBefore(el, spot.before);
+    } else {
+        el.style.cssText = el.dataset.floatCss;
+        document.body.appendChild(el);
+    }
+    el.style.display = disp;
+}
+function placeBox(el) {
+    el.dataset.staemmeBox = '1';
+    el.dataset.floatCss = el.style.cssText; // Layout im schwebenden Zustand merken
+    applyPlacement(el);
+}
+
 function makeNav() {
     const cur = new URLSearchParams(location.search);
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;';
+    wrap.className = 'stm-sec stm-nav';
     NAV_LINKS.forEach(l => {
         const isHere = cur.get('screen') === l.screen && (!l.mode || cur.get('mode') === l.mode);
         const a = document.createElement('a');
         a.href = gameUrl(l.query);
         a.textContent = l.short;
         a.title = l.title;
-        a.style.cssText = 'flex:1 1 40%;box-sizing:border-box;text-align:center;padding:10px 6px;border:1px solid #7d510f;border-radius:5px;' +
-            'color:#3a2800;text-decoration:none;font:15px Arial,sans-serif;' +
-            (isHere ? 'background:#c9a96a;font-weight:bold;' : 'background:#f9ecc8;');
+        if (isHere) a.className = 'stm-cur';
         wrap.appendChild(a);
     });
+    const tg = document.createElement('a');
+    tg.href = '#';
+    tg.className = 'stm-tg';
+    const refresh = () => { tg.textContent = dockPref() ? '↗ frei schweben' : '↙ oben andocken'; };
+    refresh();
+    tg.addEventListener('click', e => {
+        e.preventDefault();
+        setDockPref(!dockPref());
+        document.querySelectorAll('[data-staemme-box]').forEach(applyPlacement);
+        refresh();
+    });
+    wrap.appendChild(tg);
     return wrap;
 }
 
@@ -80,7 +192,7 @@ function botProtectionVisible() {
     const DEFAULT_DELAY = 7;      // Sekunden zwischen den Rohstoffen
     const DEFAULT_FACTOR = 1.5;   // Kurs + 50 %
     const STEP = 1000;            // volle Tausender
-    const VERSION = '2.6';
+    const VERSION = '2.8';
 
     // ---------- Helfer ----------
     const rawSleep = ms => new Promise(r => setTimeout(r, ms));
@@ -218,17 +330,24 @@ function botProtectionVisible() {
     // ---------- GUI ----------
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;width:250px;background:#f4e4bc;border:2px solid #7d510f;border-radius:6px;padding:8px;font:12px Verdana,sans-serif;color:#000;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    box.className = 'stm-box';
     box.innerHTML = `
-        <div style="font-weight:bold;margin-bottom:6px;">Depot-Verkauf <span style="font-weight:normal;color:#7d510f;">v${VERSION}</span></div>
-        <label style="display:block;margin-bottom:3px;"><input type="checkbox" id="dv_wood" checked> Holz</label>
-        <label style="display:block;margin-bottom:3px;"><input type="checkbox" id="dv_stone" checked> Lehm</label>
-        <label style="display:block;margin-bottom:6px;"><input type="checkbox" id="dv_iron" checked> Eisen</label>
-        <label style="display:block;margin-bottom:3px;">Aufschlag Kurs: <input type="number" id="dv_factor" value="${DEFAULT_FACTOR}" step="0.1" style="width:55px"></label>
-        <label style="display:block;margin-bottom:6px;">Pause (Sek.): <input type="number" id="dv_delay" value="${DEFAULT_DELAY}" style="width:55px"></label>
-        <button id="dv_start" class="btn" style="width:100%;margin-bottom:6px;">Alle starten</button>
-        <div id="dv_single" style="display:flex;gap:4px;margin-bottom:6px;"></div>
-        <div id="dv_log" style="max-height:140px;overflow:auto;background:#fff8e1;border:1px solid #c1a264;padding:4px;"></div>`;
-    document.body.appendChild(box);
+        <div class="stm-sec stm-title">Depot-Verkauf <span class="stm-ver">v${VERSION}</span></div>
+        <div class="stm-sec stm-stack">
+            <label><input type="checkbox" id="dv_wood" checked> Holz</label>
+            <label><input type="checkbox" id="dv_stone" checked> Lehm</label>
+            <label><input type="checkbox" id="dv_iron" checked> Eisen</label>
+        </div>
+        <div class="stm-sec stm-stack">
+            <label>Aufschlag Kurs: <input type="number" id="dv_factor" value="${DEFAULT_FACTOR}" step="0.1" style="width:55px"></label>
+            <label>Pause (Sek.): <input type="number" id="dv_delay" value="${DEFAULT_DELAY}" style="width:55px"></label>
+        </div>
+        <div class="stm-sec stm-actions">
+            <button id="dv_start" class="btn">Alle starten</button>
+            <div id="dv_single"></div>
+        </div>
+        <div class="stm-sec stm-log"><div id="dv_log"></div></div>`;
+    placeBox(box);
     box.querySelector('div').after(makeNav());
 
     const logEl = box.querySelector('#dv_log');
@@ -257,7 +376,7 @@ function botProtectionVisible() {
         red.style.cssText = 'position:fixed;top:80px;right:20px;width:60px;height:60px;z-index:2147483647;background:#d00;color:#fff;font:bold 40px/60px Arial;text-align:center;border:3px solid #fff;box-shadow:0 0 12px #000;cursor:pointer;';
         red.title = 'Botschutz erkannt – Verkauf gestoppt. Klicken zum Ausblenden.';
         red.onclick = () => { red.remove(); box.style.display = ''; };
-        document.body.appendChild(red);
+        placeBox(red);
         document.title = '⚠ BOTSCHUTZ – ' + document.title;
         try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -427,17 +546,20 @@ function botProtectionVisible() {
     // ---------- GUI ----------
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#f4e4bc;border:2px solid #7d510f;padding:5px 8px;font:12px Arial;border-radius:4px;box-shadow:0 0 6px #0008;width:190px;';
+    box.className = 'stm-box';
     box.innerHTML =
-        '<button id="rz_btn" style="cursor:pointer;font-weight:bold;padding:3px 10px;"></button>' +
-        '<div style="margin-top:5px;display:flex;gap:6px;">' +
-        [1, 2, 3, 4].map(n => '<label style="cursor:pointer;"><input type="checkbox" class="rz_cb" data-i="' + (n - 1) + '"> ' + n + '</label>').join('') +
+        '<div class="stm-sec stm-actions"><button id="rz_btn"></button></div>' +
+        '<div class="stm-sec stm-inline">' +
+        [1, 2, 3, 4].map(n => '<label><input type="checkbox" class="rz_cb" data-i="' + (n - 1) + '"> ' + n + '</label>').join('') +
         '</div>' +
-        '<label style="cursor:pointer;display:block;margin-top:4px;"><input type="checkbox" id="rz_opt"> Optimiert (Auto-Auswahl)</label>' +
-        '<label style="cursor:pointer;display:block;margin-top:2px;"><input type="checkbox" id="rz_unlock"> Neue Stufe freischalten</label>' +
-        '<div id="rz_info" style="margin-top:4px;font-size:11px;font-weight:bold;">Bereit</div>' +
-        '<div id="rz_log" style="margin-top:4px;background:#fffbe8;border:1px solid #c9a96a;height:95px;overflow-y:auto;font:10px/1.35 monospace;padding:2px 3px;"></div>' +
-        '<a href="#" id="rz_clear" style="font-size:10px;color:#7d510f;">Log leeren</a>';
-    document.body.appendChild(box);
+        '<div class="stm-sec stm-stack">' +
+        '<label><input type="checkbox" id="rz_opt"> Optimiert (Auto-Auswahl)</label>' +
+        '<label><input type="checkbox" id="rz_unlock"> Neue Stufe freischalten</label>' +
+        '</div>' +
+        '<div class="stm-sec"><div id="rz_info">Bereit</div></div>' +
+        '<div class="stm-sec stm-log"><div id="rz_log"></div>' +
+        '<a href="#" id="rz_clear" style="font-size:10px;color:#7d510f;">Log leeren</a></div>';
+    placeBox(box);
     box.insertBefore(makeNav(), box.firstChild);
     const btn = box.querySelector('#rz_btn');
     const info = box.querySelector('#rz_info');
@@ -542,7 +664,7 @@ function botProtectionVisible() {
         red.style.cssText = 'position:fixed;top:5px;left:5px;width:60px;height:60px;z-index:2147483647;background:#d00;color:#fff;font:bold 40px/60px Arial;text-align:center;border:3px solid #fff;box-shadow:0 0 12px #000;cursor:pointer;';
         red.title = 'Botschutz erkannt – Bot gestoppt. Klicken zum Ausblenden.';
         red.onclick = () => { red.remove(); box.style.display = ''; };
-        document.body.appendChild(red);
+        placeBox(red);
         document.title = '⚠ BOTSCHUTZ – ' + document.title;
         try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -821,9 +943,10 @@ function botProtectionVisible() {
 
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;width:190px;background:#f4e4bc;border:2px solid #7d510f;border-radius:6px;padding:8px;font:12px Verdana,sans-serif;color:#000;box-shadow:0 2px 8px rgba(0,0,0,.4)';
-    box.innerHTML = '<div style="font-weight:bold;margin-bottom:6px;">Schnellzugriff <span style="font-weight:normal;color:#7d510f;">v' + '2.6' + '</span></div>';
+    box.className = 'stm-box';
+    box.innerHTML = '<div class="stm-sec stm-title">Schnellzugriff <span class="stm-ver">v' + '2.8' + '</span></div>';
     box.appendChild(makeNav());
-    document.body.appendChild(box);
+    placeBox(box);
 
     if (new URLSearchParams(location.search).get('screen') === 'main') initAutoBeenden(box);
 
@@ -845,14 +968,14 @@ function botProtectionVisible() {
         let emptyTicks = 0;
 
         const sec = document.createElement('div');
-        sec.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #c1a264;text-align:center;';
+        sec.className = 'stm-sec stm-auto';
         const title = document.createElement('div');
         title.textContent = 'Auto-Beenden';
-        title.style.cssText = 'font-weight:bold;margin-bottom:6px;';
+        title.className = 'stm-atitle';
         const btn = document.createElement('button');
-        btn.style.cssText = 'cursor:pointer;border:1px solid #333;border-radius:5px;padding:10px 14px;font:bold 15px Arial,sans-serif;color:#fff;width:100%;';
+        btn.className = 'stm-btn';
         const status = document.createElement('div');
-        status.style.cssText = 'margin-top:6px;font-size:12px;';
+        status.className = 'stm-status';
         sec.append(title, btn, status);
         parent.appendChild(sec);
 
